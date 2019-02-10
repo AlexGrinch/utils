@@ -14,7 +14,7 @@ NUM_CLASSES = 8
 
 
 class CorpusDataset(Dataset):
-    def __init__(self, data_path):
+    def __init__(self, data_path, augment=False):
         t = np.load(data_path)
         self.data, self.labels = t["data"], t["labels"]
         self.data = self.data.astype(np.float32)[:,None,:,:]
@@ -26,10 +26,18 @@ class CorpusDataset(Dataset):
         else:
             self.data = self.data[:NUM_CLASSES*200]
             self.labels = self.labels[:NUM_CLASSES*200]
+        if augment:
+            self.data = np.vstack((
+                self.data, self.data[:,:,:,::-1],
+                self.data[:,:,::-1,:], self.data[:,:,::-1,::-1]))
+            self.labels = np.concatenate((
+                self.labels, self.labels,
+                self.labels, self.labels))
         self.len = self.data.shape[0]
 
     def __getitem__(self, index):
         img, lbl = self.data[index], self.labels[index]
+        #img = np.vstack((img, 1-img))
         dct = {"images": img, "labels": lbl}
         return dct
 
@@ -55,6 +63,19 @@ class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel, stride, dropout=0.0):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel, stride)
+        self.bn = nn.BatchNorm2d(out_channels)
+        
+    def forward(self, x):
+        x = self.conv(x)
+        x = F.relu(self.bn(x))
+        x = F.max_pool2d(x, 2, 2)
+        return x
+
+
+class ConvBlock2(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel, stride, dropout=0.0):
+        super(ConvBlock, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel, stride)
         self.drop = nn.Dropout(dropout)
         
     def forward(self, x):
@@ -62,23 +83,59 @@ class ConvBlock(nn.Module):
         x = self.drop(x)
         x = F.max_pool2d(x, 2, 2)
         return x
-    
+
+
+class ResBlock(nn.Module):
+
+    def __init__(self, inplanes, planes, stride=1):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.Conv2d(
+            inplanes, planes, kernel_size=3,
+            stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(
+            planes, planes, kernel_size=3,
+            stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+    def forward(self, x):
+        identity = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += identity
+        out = self.relu(out)
+        return out
+
+
 class Net(nn.Module):
-    def __init__(self, dropout=0.2):
+    def __init__(self, dropout=0.1):
         super(Net, self).__init__()
-        self.conv1 = ConvBlock(1, 16, 5, 1, dropout)
-        self.conv2 = ConvBlock(16, 16, 4, 1, dropout)
-        self.conv3 = ConvBlock(16, 16, 3, 1, dropout)
-        self.conv4 = ConvBlock(16, 16, 3, 1, dropout)
-        self.fc1 = nn.Linear(26*26*16, 512)
+        self.conv1 = ConvBlock(1, 8, 5, 1, dropout)
+        self.conv2 = ConvBlock(8, 16, 4, 1, dropout)
+        self.conv3 = ConvBlock(16, 32, 3, 1, dropout)
+        self.conv4 = ConvBlock(32, 64, 3, 1, dropout)
+        self.fc1 = nn.Linear(26*26*64, 512)
         self.fc2 = nn.Linear(512, NUM_CLASSES)
+
+        #self.conv1 = ResBlock(1, 32)
+        #self.conv2 = ResBlock(32, 32)
+        #self.conv3 = ResBlock(32, 32)
+        #self.conv4 = nn.AdaptiveAvgPool2d((1, 1))
+        #self.fc1 = nn.Linear(32, 32)
+        #self.fc2 = nn.Linear(32, NUM_CLASSES)
+        
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
         x = self.conv4(x)
-        x = x.view(-1, 26*26*16)
+        x = x.view(-1, 26*26*64)
+        #x = x.view(-1, 32)
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return F.log_softmax(x, dim=1)
@@ -101,19 +158,29 @@ def test(args, model, device, test_loader):
     model.eval()
     test_loss = 0
     correct = 0
+    errors = []
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
             data, target = batch["images"].to(device), batch["labels"].to(device)
             output = model(data)
             test_loss += F.nll_loss(output, target, reduction='sum').item() # sum up batch loss
             pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
-            correct += pred.eq(target.view_as(pred)).sum().item()
+            
+            target_ = target.view_as(pred)
+            correct += pred.eq(target_).sum().item()
+            
+            delta = (1 - target_.eq(pred)).detach().cpu().numpy()
+            err = (target_ + 1).detach().cpu().numpy() * delta
+            #err = ((target_ + 1) * (1 - target_.eq(pred))).detach().cpu().numpy()
+            errors.append(err)
 
+    errors = np.concatenate(errors)
     test_loss /= len(test_loader.dataset)
     acc = 100. * correct / len(test_loader.dataset)
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset), acc))
+    print ([(errors==(i+1)).sum() for i in range(8)])
     return acc
 
 def main():
@@ -135,9 +202,9 @@ def main():
                         help='random seed (default: 1)')
     parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                         help='how many batches to wait before logging training status')
-    
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
+    parser.add_argument('--dataset', type=str, default="circle")
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -146,13 +213,13 @@ def main():
     device = torch.device("cuda" if use_cuda else "cpu")
 
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
-    
+
     train_loader = DataLoader(
-        dataset=CorpusDataset("data/convex_clean_train.npz"),
+        dataset=CorpusDataset(f"data/{args.dataset}/train.npz", True),
         batch_size=args.batch_size, shuffle=True, **kwargs)
-    
+
     test_loader = DataLoader(
-        dataset=CorpusDataset("data/convex_clean_test.npz"),
+        dataset=CorpusDataset(f"data/{args.dataset}/test.npz", False),
         batch_size=args.batch_size, shuffle=True, **kwargs)
 
     model = Net().to(device)
