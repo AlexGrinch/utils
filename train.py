@@ -13,6 +13,7 @@ import numpy as np
 NUM_CLASSES = 8
 
 
+############################ DATA LOADERS ############################
 class CorpusDataset(Dataset):
     def __init__(self, data_path, augment=False):
         t = np.load(data_path)
@@ -58,9 +59,9 @@ class CorpusSampler(Sampler):
     def __len__(self):
         return self.len
 
-
+############################ NETWORKS ############################
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel, stride, dropout=0.0):
+    def __init__(self, in_channels, out_channels, kernel, stride):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel, stride)
         self.bn = nn.BatchNorm2d(out_channels)
@@ -72,62 +73,15 @@ class ConvBlock(nn.Module):
         return x
 
 
-class ConvBlock2(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel, stride, dropout=0.0):
-        super(ConvBlock, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel, stride)
-        self.drop = nn.Dropout(dropout)
-        
-    def forward(self, x):
-        x = F.relu(self.conv(x))
-        x = self.drop(x)
-        x = F.max_pool2d(x, 2, 2)
-        return x
-
-
-class ResBlock(nn.Module):
-
-    def __init__(self, inplanes, planes, stride=1):
-        super(ResBlock, self).__init__()
-        self.conv1 = nn.Conv2d(
-            inplanes, planes, kernel_size=3,
-            stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(
-            planes, planes, kernel_size=3,
-            stride=stride, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-
-    def forward(self, x):
-        identity = x
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out += identity
-        out = self.relu(out)
-        return out
-
-
 class Net(nn.Module):
-    def __init__(self, dropout=0.1):
+    def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = ConvBlock(1, 8, 5, 1, dropout)
-        self.conv2 = ConvBlock(8, 16, 4, 1, dropout)
-        self.conv3 = ConvBlock(16, 32, 3, 1, dropout)
-        self.conv4 = ConvBlock(32, 64, 3, 1, dropout)
+        self.conv1 = ConvBlock(1, 8, 5, 1)
+        self.conv2 = ConvBlock(8, 16, 4, 1)
+        self.conv3 = ConvBlock(16, 32, 3, 1)
+        self.conv4 = ConvBlock(32, 64, 3, 1)
         self.fc1 = nn.Linear(26*26*64, 512)
         self.fc2 = nn.Linear(512, NUM_CLASSES)
-
-        #self.conv1 = ResBlock(1, 32)
-        #self.conv2 = ResBlock(32, 32)
-        #self.conv3 = ResBlock(32, 32)
-        #self.conv4 = nn.AdaptiveAvgPool2d((1, 1))
-        #self.fc1 = nn.Linear(32, 32)
-        #self.fc2 = nn.Linear(32, NUM_CLASSES)
-        
 
     def forward(self, x):
         x = self.conv1(x)
@@ -135,11 +89,12 @@ class Net(nn.Module):
         x = self.conv3(x)
         x = self.conv4(x)
         x = x.view(-1, 26*26*64)
-        #x = x.view(-1, 32)
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return F.log_softmax(x, dim=1)
     
+
+############################ TRAINING ############################
 def train(args, model, device, train_loader, optimizer, epoch):
     model.train()
     for batch_idx, batch in enumerate(train_loader):
@@ -171,7 +126,6 @@ def test(args, model, device, test_loader):
             
             delta = (1 - target_.eq(pred)).detach().cpu().numpy()
             err = (target_ + 1).detach().cpu().numpy() * delta
-            #err = ((target_ + 1) * (1 - target_.eq(pred))).detach().cpu().numpy()
             errors.append(err)
 
     errors = np.concatenate(errors)
@@ -188,14 +142,14 @@ def main():
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
-    parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
+    parser.add_argument('--test-batch-size', type=int, default=200, metavar='N',
                         help='input batch size for testing (default: 1000)')
     parser.add_argument('--epochs', type=int, default=50, metavar='N',
                         help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
-                        help='learning rate (default: 0.01)')
+                        help='learning rate (default: 0.005)')
     parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
-                        help='SGD momentum (default: 0.5)')
+                        help='SGD momentum (default: 0.9)')
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
@@ -234,7 +188,7 @@ def main():
     print (f"BEST ACC: {best_acc}")
 
     if (args.save_model):
-        torch.save(model.state_dict(),"mnist_cnn.pt")
+        torch.save(model.state_dict(),"model.pt")
         
 if __name__ == '__main__':
     main()
